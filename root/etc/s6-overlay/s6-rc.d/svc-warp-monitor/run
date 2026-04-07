@@ -3,7 +3,7 @@
 
 echo "**** Starting WARP connection monitor ****"
 
-WARP_CONF="/config/wgcf-profile.conf"
+WARP_CONF="/config/wgcf0.conf"
 
 while true; do
     sleep 10
