@@ -57,7 +57,7 @@ while true; do
 
         # STEP 3: Bring down WARP interface
         echo "[${TIMESTAMP}] Bringing down compromised WARP interface..."
-        ip link del wgcf0 2>/dev/null || ip link set wgcf0 down 2>/dev/null || true
+        wg-quick down /config/wgcf0.conf 2>/dev/null || ip link set wgcf0 down 2>/dev/null || true
 
         echo "[${TIMESTAMP}] ✓ All connections killed"
         echo "[${TIMESTAMP}] ✓ qBittorrent stopped"
