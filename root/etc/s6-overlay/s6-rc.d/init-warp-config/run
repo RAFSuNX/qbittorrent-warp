@@ -65,13 +65,13 @@ echo "**** Starting WARP connection ****"
 ip link add dev wgcf0 type wireguard
 
 # Extract and set private key
-PRIVATE_KEY=$(grep "^PrivateKey" "${WARP_CONF}" | cut -d= -f2 | tr -d ' ')
+PRIVATE_KEY=$(grep "^PrivateKey" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
 wg set wgcf0 private-key <(echo "$PRIVATE_KEY")
 
 # Extract and configure peer
-PEER_KEY=$(grep "^PublicKey" "${WARP_CONF}" | cut -d= -f2 | tr -d ' ')
-ENDPOINT=$(grep "^Endpoint" "${WARP_CONF}" | cut -d= -f2 | tr -d ' ')
-ALLOWED_IPS=$(grep "^AllowedIPs" "${WARP_CONF}" | cut -d= -f2 | tr -d ' ')
+PEER_KEY=$(grep "^PublicKey" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
+ENDPOINT=$(grep "^Endpoint" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
+ALLOWED_IPS=$(grep "^AllowedIPs" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
 wg set wgcf0 peer "$PEER_KEY" endpoint "$ENDPOINT" allowed-ips "$ALLOWED_IPS" persistent-keepalive 25
 
 # Extract addresses from config and set them
