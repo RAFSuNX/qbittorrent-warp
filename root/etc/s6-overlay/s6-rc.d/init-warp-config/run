@@ -67,24 +67,21 @@ for i in {1..30}; do
         iptables -F
         iptables -X
 
-        # Default policy: DROP everything
-        iptables -P INPUT DROP
+        # Default policy: DROP outgoing, ACCEPT incoming
+        iptables -P INPUT ACCEPT
         iptables -P FORWARD DROP
         iptables -P OUTPUT DROP
 
-        # Allow loopback (localhost) - needed for qBittorrent WebUI
-        iptables -A INPUT -i lo -j ACCEPT
+        # Allow loopback (localhost)
         iptables -A OUTPUT -o lo -j ACCEPT
 
-        # Allow established connections
-        iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        # Allow established connections (responses)
         iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        # Allow ONLY traffic through WARP (wgcf0) interface
+        # Allow ONLY new connections through WARP interface
         iptables -A OUTPUT -o wgcf0 -j ACCEPT
-        iptables -A INPUT -i wgcf0 -j ACCEPT
 
-        # Block everything else (kill switch active)
+        # Block everything else - no traffic can bypass WARP
         iptables -A OUTPUT -j DROP
 
         echo "**** Kill switch activated - all traffic forced through WARP ****"
