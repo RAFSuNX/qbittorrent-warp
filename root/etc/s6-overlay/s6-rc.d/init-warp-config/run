@@ -47,7 +47,7 @@ fi
 echo "**** Setting up WireGuard interface ****"
 if ip link show wgcf0 2>/dev/null; then
     echo "**** Removing existing wgcf0 interface ****"
-    wg-quick down "${WARP_CONF}" 2>/dev/null || true
+    ip link del wgcf0 2>/dev/null || true
 fi
 
 # Configure public DNS (1.1.1.1, 8.8.8.8)
@@ -58,9 +58,30 @@ nameserver 8.8.8.8
 options ndots:0
 DNSEOF
 
-# Start WireGuard
+# Start WireGuard (manual setup to avoid fwmark/sysctl requirements)
 echo "**** Starting WARP connection ****"
-wg-quick up "${WARP_CONF}"
+
+# Create interface
+ip link add dev wgcf0 type wireguard
+
+# Apply WireGuard configuration
+wg setconf wgcf0 "${WARP_CONF}"
+
+# Extract addresses from config and set them
+IPV4_ADDR=$(grep "^Address" "${WARP_CONF}" | awk -F'[, ]' '{print $3}')
+IPV6_ADDR=$(grep "^Address" "${WARP_CONF}" | awk -F'[, ]' '{print $4}')
+[ -n "$IPV4_ADDR" ] && ip -4 address add "$IPV4_ADDR" dev wgcf0
+[ -n "$IPV6_ADDR" ] && ip -6 address add "$IPV6_ADDR" dev wgcf0
+
+# Set MTU
+MTU=$(grep "^MTU" "${WARP_CONF}" | awk '{print $3}')
+[ -n "$MTU" ] && ip link set mtu "$MTU" dev wgcf0
+
+# Bring interface up
+ip link set wgcf0 up
+
+# Add simple default route through wgcf0 (no policy routing, no fwmark)
+ip route add default dev wgcf0
 
 # Wait for interface to be up
 echo "**** Waiting for WARP connection ****"
