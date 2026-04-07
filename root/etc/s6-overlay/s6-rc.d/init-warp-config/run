@@ -1,95 +1,101 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
 
-echo "**** Initializing Cloudflare WARP ****"
+echo "**** Initializing Cloudflare WARP via WireGuard ****"
 
-# Wait for warp-svc to be ready
-sleep 3
+WARP_CONF="/config/wgcf-profile.conf"
+WGCF_DIR="/config/wgcf"
 
-# Register WARP if not already registered
-if ! warp-cli account 2>/dev/null | grep -q "Active"; then
-    echo "**** Registering WARP ****"
-    warp-cli registration new
+# Create wgcf directory
+mkdir -p "${WGCF_DIR}"
+cd "${WGCF_DIR}"
+
+# Check if we already have a WARP config
+if [[ ! -f "${WARP_CONF}" ]]; then
+    echo "**** Registering with Cloudflare WARP ****"
+
+    # Register new account
+    if [[ -n "${WARP_LICENSE_KEY}" ]]; then
+        echo "**** Using WARP+ license key ****"
+        wgcf register --accept-tos --license-key "${WARP_LICENSE_KEY}"
+    else
+        echo "**** Using free WARP ****"
+        wgcf register --accept-tos
+    fi
+
+    # Generate WireGuard profile
+    echo "**** Generating WireGuard configuration ****"
+    wgcf generate
+
+    # Move config to persistent location
+    mv wgcf-profile.conf "${WARP_CONF}"
+
+    echo "**** WARP configuration created ****"
+else
+    echo "**** Using existing WARP configuration ****"
 fi
 
-# Enable WARP if using license key from environment
-if [[ -n "${WARP_LICENSE_KEY}" ]]; then
-    echo "**** Applying WARP license ****"
-    warp-cli registration license "${WARP_LICENSE_KEY}"
+# Update license if provided and config exists
+if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; then
+    echo "**** Updating WARP+ license ****"
+    wgcf update --license-key "${WARP_LICENSE_KEY}" 2>/dev/null || true
+    wgcf generate
+    mv wgcf-profile.conf "${WARP_CONF}"
 fi
 
-# Set WARP mode (default to warp, can be warp+doh)
-WARP_MODE="${WARP_MODE:-warp}"
-echo "**** Setting WARP mode to ${WARP_MODE} ****"
-warp-cli mode "${WARP_MODE}"
+# Set up WireGuard interface
+echo "**** Setting up WireGuard interface ****"
+if ip link show wgcf0 2>/dev/null; then
+    echo "**** Removing existing wgcf0 interface ****"
+    wg-quick down "${WARP_CONF}" 2>/dev/null || true
+fi
 
-# Connect to WARP
-echo "**** Connecting to WARP ****"
-warp-cli connect
+# Start WireGuard
+echo "**** Starting WARP connection ****"
+wg-quick up "${WARP_CONF}"
 
-# Wait for connection to establish
+# Wait for interface to be up
 echo "**** Waiting for WARP connection ****"
 for i in {1..30}; do
-    if warp-cli status | grep -q "Connected"; then
+    if ip link show wgcf0 2>/dev/null | grep -q "state UP"; then
         echo "**** WARP connected successfully ****"
 
-        # Get WARP interface name
-        WARP_INTERFACE=$(ip route show | grep -oP 'dev \K(CloudflareWARP|wgcf)' | head -n1)
+        # Set up iptables kill switch
+        echo "**** Setting up WARP kill switch ****"
 
-        if [[ -z "${WARP_INTERFACE}" ]]; then
-            echo "**** WARNING: Could not detect WARP interface, trying alternative method ****"
-            # Alternative: look for the interface created by warp-svc
-            WARP_INTERFACE=$(ip link show | grep -oP '^\d+: \K(CloudflareWARP|wgcf|warp0)' | head -n1)
-        fi
+        # Flush existing rules
+        iptables -F
+        iptables -X
 
-        if [[ -n "${WARP_INTERFACE}" ]]; then
-            echo "**** WARP interface detected: ${WARP_INTERFACE} ****"
+        # Default policy: DROP everything
+        iptables -P INPUT DROP
+        iptables -P FORWARD DROP
+        iptables -P OUTPUT DROP
 
-            # CRITICAL: Set up iptables kill switch
-            # This ensures ALL traffic MUST go through WARP - no leaks possible
-            echo "**** Setting up WARP kill switch ****"
+        # Allow loopback (localhost) - needed for qBittorrent WebUI
+        iptables -A INPUT -i lo -j ACCEPT
+        iptables -A OUTPUT -o lo -j ACCEPT
 
-            # Flush existing rules
-            iptables -F
-            iptables -X
+        # Allow established connections
+        iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-            # Default policy: DROP everything
-            iptables -P INPUT DROP
-            iptables -P FORWARD DROP
-            iptables -P OUTPUT DROP
+        # Allow ONLY traffic through WARP (wgcf0) interface
+        iptables -A OUTPUT -o wgcf0 -j ACCEPT
+        iptables -A INPUT -i wgcf0 -j ACCEPT
 
-            # Allow loopback (localhost) - needed for qBittorrent WebUI
-            iptables -A INPUT -i lo -j ACCEPT
-            iptables -A OUTPUT -o lo -j ACCEPT
+        # Block everything else (kill switch active)
+        iptables -A OUTPUT -j DROP
 
-            # Allow established connections
-            iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-            iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-            # Allow ONLY traffic through WARP interface
-            iptables -A OUTPUT -o "${WARP_INTERFACE}" -j ACCEPT
-            iptables -A INPUT -i "${WARP_INTERFACE}" -j ACCEPT
-
-            # Allow DNS through WARP (port 53)
-            iptables -A OUTPUT -o "${WARP_INTERFACE}" -p udp --dport 53 -j ACCEPT
-            iptables -A OUTPUT -o "${WARP_INTERFACE}" -p tcp --dport 53 -j ACCEPT
-
-            # Block everything else (kill switch active)
-            iptables -A OUTPUT -j DROP
-
-            echo "**** Kill switch activated - all traffic forced through WARP ****"
-        else
-            echo "**** ERROR: Could not detect WARP interface ****"
-            exit 1
-        fi
+        echo "**** Kill switch activated - all traffic forced through WARP ****"
 
         # Display connection info
-        echo "**** WARP Status ****"
-        warp-cli status
+        echo "**** WireGuard Status ****"
+        wg show wgcf0
 
         # Show public IP (should be Cloudflare IP now)
         echo "**** Public IP (via WARP) ****"
-        curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp="
+        curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp=" || echo "Could not verify IP (expected during build)"
 
         # Display iptables rules
         echo "**** Active firewall rules ****"
@@ -102,4 +108,5 @@ for i in {1..30}; do
 done
 
 echo "**** ERROR: WARP failed to connect ****"
+wg show
 exit 1

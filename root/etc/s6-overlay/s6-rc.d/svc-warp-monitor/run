@@ -3,24 +3,29 @@
 
 echo "**** Starting WARP connection monitor ****"
 
+WARP_CONF="/config/wgcf-profile.conf"
+
 while true; do
     sleep 10
 
-    # Check if WARP is connected
-    if ! warp-cli status 2>/dev/null | grep -q "Connected"; then
+    # Check if WARP interface is up
+    if ! ip link show wgcf0 2>/dev/null | grep -q "state UP"; then
         echo "**** CRITICAL: WARP connection lost! ****"
         echo "**** Kill switch is active - no traffic can leak ****"
         echo "**** Attempting to reconnect... ****"
 
-        warp-cli connect
+        # Try to bring interface back up
+        wg-quick up "${WARP_CONF}" 2>/dev/null
         sleep 5
 
         # If still not connected after retry, this is critical
-        if ! warp-cli status 2>/dev/null | grep -q "Connected"; then
+        if ! ip link show wgcf0 2>/dev/null | grep -q "state UP"; then
             echo "**** FATAL: WARP reconnection failed ****"
             echo "**** Container will shutdown to prevent traffic leaks ****"
             # Send termination signal to s6-overlay
             s6-svscanctl -t /var/run/s6/services
+        else
+            echo "**** WARP reconnected successfully ****"
         fi
     fi
 done
