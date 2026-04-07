@@ -80,7 +80,8 @@ MTU=$(grep "^MTU" "${WARP_CONF}" | awk '{print $3}')
 # Bring interface up
 ip link set wgcf0 up
 
-# Add simple default route through wgcf0 (no policy routing, no fwmark)
+# Replace default route with wgcf0 (no policy routing, no fwmark)
+ip route del default 2>/dev/null || true
 ip route add default dev wgcf0
 
 # Wait for interface to be up
