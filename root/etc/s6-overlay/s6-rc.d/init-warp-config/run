@@ -50,6 +50,14 @@ if ip link show wgcf0 2>/dev/null; then
     wg-quick down "${WARP_CONF}" 2>/dev/null || true
 fi
 
+# Configure public DNS (1.1.1.1, 8.8.8.8)
+echo "**** Configuring public DNS for tracker resolution ****"
+cat > /etc/resolv.conf << 'DNSEOF'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+options ndots:0
+DNSEOF
+
 # Start WireGuard
 echo "**** Starting WARP connection ****"
 wg-quick up "${WARP_CONF}"
@@ -59,6 +67,11 @@ echo "**** Waiting for WARP connection ****"
 for i in {1..30}; do
     if ip link show wgcf0 2>/dev/null | grep -q "<.*UP.*>"; then
         echo "**** WARP connected successfully ****"
+
+        # Get WARP endpoint for iptables
+        WARP_ENDPOINT=$(wg show wgcf0 endpoints | awk '{print $2}' | cut -d: -f1)
+        WARP_PORT=$(wg show wgcf0 endpoints | awk '{print $2}' | cut -d: -f2)
+        echo "**** WARP Endpoint: ${WARP_ENDPOINT}:${WARP_PORT} ****"
 
         # Set up iptables kill switch
         echo "**** Setting up WARP kill switch ****"
@@ -75,10 +88,13 @@ for i in {1..30}; do
         # Allow loopback (localhost)
         iptables -A OUTPUT -o lo -j ACCEPT
 
+        # CRITICAL: Allow WireGuard handshake to WARP endpoint
+        iptables -A OUTPUT -p udp -d ${WARP_ENDPOINT} --dport ${WARP_PORT} -j ACCEPT
+
         # Allow established connections (responses)
         iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        # Allow ONLY new connections through WARP interface
+        # Allow all traffic through WARP (including DNS to 1.1.1.1)
         iptables -A OUTPUT -o wgcf0 -j ACCEPT
 
         # Block everything else - no traffic can bypass WARP
