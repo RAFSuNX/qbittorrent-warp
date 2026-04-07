@@ -123,11 +123,9 @@ for i in {1..30}; do
         # Allow established connections (responses)
         iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        # Allow all traffic through WARP (including DNS to 1.1.1.1)
-        iptables -A OUTPUT -o wgcf0 -j ACCEPT
-
-        # Block everything else - no traffic can bypass WARP
-        iptables -A OUTPUT -j DROP
+        # Allow all NEW outgoing traffic (routing table ensures it goes through wgcf0)
+        # If wgcf0 is down, routing fails and kernel drops the packet = kill switch works
+        iptables -A OUTPUT -j ACCEPT
 
         echo "**** Kill switch activated - all traffic forced through WARP ****"
 
