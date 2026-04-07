@@ -50,24 +50,25 @@ RUN \
     /root/.cache \
     /tmp/*
 
-# install cloudflare warp
+# install wireguard and wgcf for cloudflare warp
 RUN \
-  echo "**** install cloudflare warp ****" && \
+  echo "**** install wireguard and wgcf ****" && \
   apk add --no-cache \
+    wireguard-tools \
     iptables \
-    ip6tables && \
-  mkdir -p /tmp/warp && \
+    ip6tables \
+    openresolv && \
   ARCH=$(uname -m) && \
   if [ "${ARCH}" = "x86_64" ]; then \
-    WARP_ARCH="x86_64"; \
+    WGCF_ARCH="amd64"; \
   elif [ "${ARCH}" = "aarch64" ]; then \
-    WARP_ARCH="aarch64"; \
+    WGCF_ARCH="arm64"; \
   else \
     echo "Unsupported architecture: ${ARCH}"; exit 1; \
   fi && \
-  curl -fsSL "https://github.com/cloudflare/cloudflare-warp/releases/latest/download/warp-svc_linux_${WARP_ARCH}" -o /usr/bin/warp-svc && \
-  curl -fsSL "https://github.com/cloudflare/cloudflare-warp/releases/latest/download/warp-cli_linux_${WARP_ARCH}" -o /usr/bin/warp-cli && \
-  chmod +x /usr/bin/warp-svc /usr/bin/warp-cli && \
+  WGCF_VERSION=$(curl -sL "https://api.github.com/repos/ViRb3/wgcf/releases/latest" | grep -oP '"tag_name": "\K(.*)(?=")') && \
+  curl -fsSL "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VERSION}/wgcf_${WGCF_VERSION#v}_linux_${WGCF_ARCH}" -o /usr/bin/wgcf && \
+  chmod +x /usr/bin/wgcf && \
   echo "**** cleanup ****" && \
   rm -rf \
     /tmp/*
