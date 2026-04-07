@@ -37,18 +37,37 @@ while true; do
         echo "[${TIMESTAMP}] 🚨🚨🚨 CRITICAL ALERT: NON-CLOUDFLARE IP DETECTED! 🚨🚨🚨"
         echo "[${TIMESTAMP}] Detected IP: ${PUBLIC_IP}"
         echo "[${TIMESTAMP}] This indicates WARP has failed and traffic may be leaking!"
-        echo "[${TIMESTAMP}] EMERGENCY ACTION: Stopping qBittorrent immediately!"
+        echo "[${TIMESTAMP}] EMERGENCY ACTION: KILLING ALL CONNECTIONS IMMEDIATELY!"
 
-        # Stop qBittorrent service immediately
+        # STEP 1: Block ALL network traffic immediately (except localhost)
+        echo "[${TIMESTAMP}] Blocking all network traffic..."
+        iptables -F OUTPUT
+        iptables -P OUTPUT DROP
+        iptables -A OUTPUT -o lo -j ACCEPT
+        iptables -A OUTPUT -j DROP
+
+        # Kill all established connections
+        echo "[${TIMESTAMP}] Killing all network connections..."
+        ss -K dst != 127.0.0.1 2>/dev/null || true
+
+        # STEP 2: Stop qBittorrent service
+        echo "[${TIMESTAMP}] Stopping qBittorrent service..."
         s6-svc -d /run/service/svc-qbittorrent
+        s6-svc -k /run/service/svc-qbittorrent
 
-        echo "[${TIMESTAMP}] qBittorrent STOPPED to prevent IP leak"
-        echo "[${TIMESTAMP}] Container will shutdown in 10 seconds to prevent further leaks"
+        # STEP 3: Bring down WARP interface
+        echo "[${TIMESTAMP}] Bringing down compromised WARP interface..."
+        wg-quick down /config/wgcf0.conf 2>/dev/null || ip link set wgcf0 down 2>/dev/null || true
+
+        echo "[${TIMESTAMP}] ✓ All connections killed"
+        echo "[${TIMESTAMP}] ✓ qBittorrent stopped"
+        echo "[${TIMESTAMP}] ✓ Network blocked"
+        echo "[${TIMESTAMP}] Container will shutdown in 5 seconds"
 
         # Give time to flush logs
-        sleep 10
+        sleep 5
 
-        # Shutdown entire container
+        # STEP 4: Shutdown entire container
         s6-svscanctl -t /var/run/s6/services
 
         exit 1
