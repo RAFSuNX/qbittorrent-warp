@@ -50,6 +50,28 @@ RUN \
     /root/.cache \
     /tmp/*
 
+# install cloudflare warp
+RUN \
+  echo "**** install cloudflare warp ****" && \
+  apk add --no-cache \
+    iptables \
+    ip6tables && \
+  mkdir -p /tmp/warp && \
+  ARCH=$(uname -m) && \
+  if [ "${ARCH}" = "x86_64" ]; then \
+    WARP_ARCH="x86_64"; \
+  elif [ "${ARCH}" = "aarch64" ]; then \
+    WARP_ARCH="aarch64"; \
+  else \
+    echo "Unsupported architecture: ${ARCH}"; exit 1; \
+  fi && \
+  curl -fsSL "https://github.com/cloudflare/cloudflare-warp/releases/latest/download/warp-svc_linux_${WARP_ARCH}" -o /usr/bin/warp-svc && \
+  curl -fsSL "https://github.com/cloudflare/cloudflare-warp/releases/latest/download/warp-cli_linux_${WARP_ARCH}" -o /usr/bin/warp-cli && \
+  chmod +x /usr/bin/warp-svc /usr/bin/warp-cli && \
+  echo "**** cleanup ****" && \
+  rm -rf \
+    /tmp/*
+
 # add local files
 COPY root/ /
 

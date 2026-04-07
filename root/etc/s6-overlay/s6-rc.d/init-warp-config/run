@@ -1,0 +1,105 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+echo "**** Initializing Cloudflare WARP ****"
+
+# Wait for warp-svc to be ready
+sleep 3
+
+# Register WARP if not already registered
+if ! warp-cli account 2>/dev/null | grep -q "Active"; then
+    echo "**** Registering WARP ****"
+    warp-cli registration new
+fi
+
+# Enable WARP if using license key from environment
+if [[ -n "${WARP_LICENSE_KEY}" ]]; then
+    echo "**** Applying WARP license ****"
+    warp-cli registration license "${WARP_LICENSE_KEY}"
+fi
+
+# Set WARP mode (default to warp, can be warp+doh)
+WARP_MODE="${WARP_MODE:-warp}"
+echo "**** Setting WARP mode to ${WARP_MODE} ****"
+warp-cli mode "${WARP_MODE}"
+
+# Connect to WARP
+echo "**** Connecting to WARP ****"
+warp-cli connect
+
+# Wait for connection to establish
+echo "**** Waiting for WARP connection ****"
+for i in {1..30}; do
+    if warp-cli status | grep -q "Connected"; then
+        echo "**** WARP connected successfully ****"
+
+        # Get WARP interface name
+        WARP_INTERFACE=$(ip route show | grep -oP 'dev \K(CloudflareWARP|wgcf)' | head -n1)
+
+        if [[ -z "${WARP_INTERFACE}" ]]; then
+            echo "**** WARNING: Could not detect WARP interface, trying alternative method ****"
+            # Alternative: look for the interface created by warp-svc
+            WARP_INTERFACE=$(ip link show | grep -oP '^\d+: \K(CloudflareWARP|wgcf|warp0)' | head -n1)
+        fi
+
+        if [[ -n "${WARP_INTERFACE}" ]]; then
+            echo "**** WARP interface detected: ${WARP_INTERFACE} ****"
+
+            # CRITICAL: Set up iptables kill switch
+            # This ensures ALL traffic MUST go through WARP - no leaks possible
+            echo "**** Setting up WARP kill switch ****"
+
+            # Flush existing rules
+            iptables -F
+            iptables -X
+
+            # Default policy: DROP everything
+            iptables -P INPUT DROP
+            iptables -P FORWARD DROP
+            iptables -P OUTPUT DROP
+
+            # Allow loopback (localhost) - needed for qBittorrent WebUI
+            iptables -A INPUT -i lo -j ACCEPT
+            iptables -A OUTPUT -o lo -j ACCEPT
+
+            # Allow established connections
+            iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+            iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+            # Allow ONLY traffic through WARP interface
+            iptables -A OUTPUT -o "${WARP_INTERFACE}" -j ACCEPT
+            iptables -A INPUT -i "${WARP_INTERFACE}" -j ACCEPT
+
+            # Allow DNS through WARP (port 53)
+            iptables -A OUTPUT -o "${WARP_INTERFACE}" -p udp --dport 53 -j ACCEPT
+            iptables -A OUTPUT -o "${WARP_INTERFACE}" -p tcp --dport 53 -j ACCEPT
+
+            # Block everything else (kill switch active)
+            iptables -A OUTPUT -j DROP
+
+            echo "**** Kill switch activated - all traffic forced through WARP ****"
+        else
+            echo "**** ERROR: Could not detect WARP interface ****"
+            exit 1
+        fi
+
+        # Display connection info
+        echo "**** WARP Status ****"
+        warp-cli status
+
+        # Show public IP (should be Cloudflare IP now)
+        echo "**** Public IP (via WARP) ****"
+        curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp="
+
+        # Display iptables rules
+        echo "**** Active firewall rules ****"
+        iptables -L -v -n
+
+        exit 0
+    fi
+    echo "Waiting for WARP connection... ($i/30)"
+    sleep 2
+done
+
+echo "**** ERROR: WARP failed to connect ****"
+exit 1
