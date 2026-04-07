@@ -27,8 +27,8 @@ if [[ ! -f "${WARP_CONF}" ]]; then
     echo "**** Generating WireGuard configuration ****"
     wgcf generate
 
-    # Move config and remove DNS lines (Kubernetes manages DNS)
-    grep -v '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
+    # Move config and remove DNS/FwMark/Table lines (Kubernetes manages DNS, FwMark needs unsafe sysctl)
+    grep -v -E '^(DNS|FwMark|Table) = ' wgcf-profile.conf > "${WARP_CONF}"
 
     echo "**** WARP configuration created ****"
 else
@@ -40,7 +40,7 @@ if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; t
     echo "**** Updating WARP+ license ****"
     wgcf update --license-key "${WARP_LICENSE_KEY}" 2>/dev/null || true
     wgcf generate
-    grep -v '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
+    grep -v -E '^(DNS|FwMark|Table) = ' wgcf-profile.conf > "${WARP_CONF}"
 fi
 
 # Set up WireGuard interface
