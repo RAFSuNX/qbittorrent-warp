@@ -1,0 +1,12 @@
+#!/bin/bash
+# Wrapper for sysctl that ignores net.ipv4.conf.all.src_valid_mark
+# This sysctl requires unsafe permissions in Kubernetes that we don't have
+# WireGuard works fine without it for our use case
+
+if [[ "$*" == *"net.ipv4.conf.all.src_valid_mark"* ]]; then
+    # Silently succeed for the problematic sysctl
+    exit 0
+fi
+
+# Pass through all other sysctl calls to the real sysctl
+exec /sbin/sysctl "$@"

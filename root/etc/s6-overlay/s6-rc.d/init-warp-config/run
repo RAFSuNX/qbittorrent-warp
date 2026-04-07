@@ -47,7 +47,7 @@ fi
 echo "**** Setting up WireGuard interface ****"
 if ip link show wgcf0 2>/dev/null; then
     echo "**** Removing existing wgcf0 interface ****"
-    ip link del wgcf0 2>/dev/null || true
+    wg-quick down "${WARP_CONF}" 2>/dev/null || true
 fi
 
 # Configure public DNS (1.1.1.1, 8.8.8.8)
@@ -58,41 +58,9 @@ nameserver 8.8.8.8
 options ndots:0
 DNSEOF
 
-# Start WireGuard (manual setup to avoid fwmark/sysctl requirements)
+# Start WireGuard using wg-quick (with sysctl wrapper to bypass permission check)
 echo "**** Starting WARP connection ****"
-
-# Create interface
-ip link add dev wgcf0 type wireguard
-
-# Extract and set private key
-PRIVATE_KEY=$(grep "^PrivateKey" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
-wg set wgcf0 private-key <(echo "$PRIVATE_KEY")
-
-# Extract and configure peer
-PEER_KEY=$(grep "^PublicKey" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
-ENDPOINT=$(grep "^Endpoint" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
-ALLOWED_IPS=$(grep "^AllowedIPs" "${WARP_CONF}" | cut -d= -f2- | tr -d ' ')
-wg set wgcf0 peer "$PEER_KEY" endpoint "$ENDPOINT" allowed-ips "$ALLOWED_IPS" persistent-keepalive 25
-
-# Extract addresses from config and set them
-IPV4_ADDR=$(grep "^Address" "${WARP_CONF}" | awk -F'[, ]' '{print $3}')
-IPV6_ADDR=$(grep "^Address" "${WARP_CONF}" | awk -F'[, ]' '{print $4}')
-[ -n "$IPV4_ADDR" ] && ip -4 address add "$IPV4_ADDR" dev wgcf0
-[ -n "$IPV6_ADDR" ] && ip -6 address add "$IPV6_ADDR" dev wgcf0
-
-# Set MTU
-MTU=$(grep "^MTU" "${WARP_CONF}" | awk '{print $3}')
-[ -n "$MTU" ] && ip link set mtu "$MTU" dev wgcf0
-
-# Bring interface up
-ip link set wgcf0 up
-
-# Wait for interface to fully initialize
-sleep 2
-
-# Replace default route with wgcf0 and set source IP (no policy routing, no fwmark)
-ip route del default 2>/dev/null || true
-ip route add default dev wgcf0 src ${IPV4_ADDR%%/*}
+wg-quick up "${WARP_CONF}"
 
 # Wait for interface to be up
 echo "**** Waiting for WARP connection ****"
