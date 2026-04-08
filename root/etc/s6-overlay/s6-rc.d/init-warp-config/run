@@ -27,11 +27,11 @@ if [[ ! -f "${WARP_CONF}" ]]; then
     echo "**** Generating WireGuard configuration ****"
     wgcf generate
 
-    # Move config and remove DNS lines (Kubernetes manages DNS), keep MTU and addresses
+    # Move config and remove DNS lines (Kubernetes manages DNS)
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
 
-    # Set MTU to 1100 (eth0 in k8s is 1230, need room for WireGuard overhead ~80-100 bytes)
-    sed -i 's/^MTU = .*/MTU = 1100/' "${WARP_CONF}"
+    # Keep default MTU 1280 for now (1100 causes routing table issues)
+    # Will adjust MTU after interface is up
 
     echo "**** WARP configuration created ****"
 else
@@ -44,9 +44,6 @@ if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; t
     wgcf update --license-key "${WARP_LICENSE_KEY}" 2>/dev/null || true
     wgcf generate
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
-
-    # Set MTU to 1100
-    sed -i 's/^MTU = .*/MTU = 1100/' "${WARP_CONF}"
 fi
 
 # Set up WireGuard interface
@@ -73,6 +70,10 @@ echo "**** Waiting for WARP connection ****"
 for i in {1..30}; do
     if ip link show wgcf0 2>/dev/null | grep -q "<.*UP.*>"; then
         echo "**** WARP connected successfully ****"
+
+        # Lower MTU to 1100 (eth0 is 1230, need room for WireGuard overhead)
+        echo "**** Adjusting MTU to 1100 for k8s compatibility ****"
+        ip link set dev wgcf0 mtu 1100
 
         # Get WARP endpoint for iptables
         WARP_ENDPOINT=$(wg show wgcf0 endpoints | awk '{print $2}' | cut -d: -f1)
