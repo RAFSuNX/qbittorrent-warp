@@ -114,11 +114,14 @@ for i in {1..30}; do
         # Allow established connections (IPv6)
         ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        # Allow all NEW outgoing traffic (IPv4 and IPv6)
-        # Routing table ensures it goes through wgcf0
-        # If wgcf0 is down, routing fails and kernel drops the packet = kill switch works
-        iptables -A OUTPUT -j ACCEPT
-        ip6tables -A OUTPUT -j ACCEPT
+        # Only allow traffic through wgcf0 interface (kill switch enforcement)
+        # This ensures traffic MUST go through WARP or be blocked
+        iptables -A OUTPUT -o wgcf0 -j ACCEPT
+        ip6tables -A OUTPUT -o wgcf0 -j ACCEPT
+
+        # Block everything else (kill switch active)
+        iptables -A OUTPUT -j DROP
+        ip6tables -A OUTPUT -j DROP
 
         echo "**** Kill switch activated - all traffic forced through WARP (IPv4 + IPv6) ****"
 
