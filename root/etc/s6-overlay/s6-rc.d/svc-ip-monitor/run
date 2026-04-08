@@ -9,14 +9,19 @@ LEAK_COUNT=0
 while true; do
     sleep 20
 
-    # Get public IP through WARP
-    PUBLIC_IP=$(timeout 3 wget -qO- http://ipinfo.io/ip 2>/dev/null || echo "failed")
+    # Get public IPs through WARP (both IPv4 and IPv6)
+    PUBLIC_IP4=$(timeout 3 wget -4 -qO- http://ipinfo.io/ip 2>/dev/null || echo "failed")
+    PUBLIC_IP6=$(timeout 3 wget -6 -qO- http://ipinfo.io/ip 2>/dev/null || echo "failed")
 
     # Get timestamp
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-    # Log the IP
-    echo "[${TIMESTAMP}] Public IP via WARP: ${PUBLIC_IP}"
+    # Log both IPs
+    echo "[${TIMESTAMP}] Public IPv4 via WARP: ${PUBLIC_IP4}"
+    echo "[${TIMESTAMP}] Public IPv6 via WARP: ${PUBLIC_IP6}"
+
+    # Use IPv4 for Cloudflare verification (main check)
+    PUBLIC_IP="${PUBLIC_IP4}"
 
     # Check if IP is in official Cloudflare ranges (as of 2026-04-07)
     # Source: https://www.cloudflare.com/ips-v4
