@@ -71,9 +71,7 @@ for i in {1..30}; do
     if ip link show wgcf0 2>/dev/null | grep -q "<.*UP.*>"; then
         echo "**** WARP connected successfully ****"
 
-        # Lower MTU to 1100 (eth0 is 1230, need room for WireGuard overhead)
-        echo "**** Adjusting MTU to 1100 for k8s compatibility ****"
-        ip link set dev wgcf0 mtu 1100
+        # Keep default MTU 1280 from wgcf (works for IPv6, within pod MTU 4950)
 
         # Get WARP endpoint for iptables
         WARP_ENDPOINT=$(wg show wgcf0 endpoints | awk '{print $2}' | cut -d: -f1)
