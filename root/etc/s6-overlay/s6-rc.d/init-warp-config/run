@@ -27,8 +27,14 @@ if [[ ! -f "${WARP_CONF}" ]]; then
     echo "**** Generating WireGuard configuration ****"
     wgcf generate
 
-    # Move config and remove DNS/FwMark/Table lines (Kubernetes manages DNS, FwMark needs unsafe sysctl)
-    grep -v -E '^(DNS|FwMark|Table) = ' wgcf-profile.conf > "${WARP_CONF}"
+    # Move config and remove DNS lines (Kubernetes manages DNS), keep MTU and addresses
+    grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
+
+    # Add PostUp/PostDown for MSS clamping (fixes HTTPS/TLS packet size issues)
+    sed -i '/\[Interface\]/a PostUp = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
+    sed -i '/\[Interface\]/a PostUp = ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
+    sed -i '/\[Interface\]/a PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
+    sed -i '/\[Interface\]/a PostDown = ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
 
     echo "**** WARP configuration created ****"
 else
@@ -40,7 +46,13 @@ if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; t
     echo "**** Updating WARP+ license ****"
     wgcf update --license-key "${WARP_LICENSE_KEY}" 2>/dev/null || true
     wgcf generate
-    grep -v -E '^(DNS|FwMark|Table) = ' wgcf-profile.conf > "${WARP_CONF}"
+    grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
+
+    # Re-add PostUp/PostDown for MSS clamping
+    sed -i '/\[Interface\]/a PostUp = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
+    sed -i '/\[Interface\]/a PostUp = ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
+    sed -i '/\[Interface\]/a PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
+    sed -i '/\[Interface\]/a PostDown = ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
 fi
 
 # Set up WireGuard interface
@@ -73,32 +85,49 @@ for i in {1..30}; do
         WARP_PORT=$(wg show wgcf0 endpoints | awk '{print $2}' | cut -d: -f2)
         echo "**** WARP Endpoint: ${WARP_ENDPOINT}:${WARP_PORT} ****"
 
-        # Set up iptables kill switch
+        # Set up iptables kill switch (IPv4 and IPv6)
         echo "**** Setting up WARP kill switch ****"
 
-        # Flush existing rules
+        # Flush existing rules (IPv4)
         iptables -F
         iptables -X
 
-        # Default policy: DROP outgoing, ACCEPT incoming
+        # Flush existing rules (IPv6)
+        ip6tables -F
+        ip6tables -X
+
+        # Default policy: DROP outgoing, ACCEPT incoming (IPv4)
         iptables -P INPUT ACCEPT
         iptables -P FORWARD DROP
         iptables -P OUTPUT DROP
 
-        # Allow loopback (localhost)
+        # Default policy: DROP outgoing, ACCEPT incoming (IPv6)
+        ip6tables -P INPUT ACCEPT
+        ip6tables -P FORWARD DROP
+        ip6tables -P OUTPUT DROP
+
+        # Allow loopback (IPv4)
         iptables -A OUTPUT -o lo -j ACCEPT
 
-        # CRITICAL: Allow WireGuard handshake to WARP endpoint
+        # Allow loopback (IPv6)
+        ip6tables -A OUTPUT -o lo -j ACCEPT
+
+        # CRITICAL: Allow WireGuard handshake to WARP endpoint (IPv4)
         iptables -A OUTPUT -p udp -d ${WARP_ENDPOINT} --dport ${WARP_PORT} -j ACCEPT
 
-        # Allow established connections (responses)
+        # Allow established connections (IPv4)
         iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        # Allow all NEW outgoing traffic (routing table ensures it goes through wgcf0)
+        # Allow established connections (IPv6)
+        ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        # Allow all NEW outgoing traffic (IPv4 and IPv6)
+        # Routing table ensures it goes through wgcf0
         # If wgcf0 is down, routing fails and kernel drops the packet = kill switch works
         iptables -A OUTPUT -j ACCEPT
+        ip6tables -A OUTPUT -j ACCEPT
 
-        echo "**** Kill switch activated - all traffic forced through WARP ****"
+        echo "**** Kill switch activated - all traffic forced through WARP (IPv4 + IPv6) ****"
 
         # Display connection info
         echo "**** WireGuard Status ****"
@@ -108,9 +137,12 @@ for i in {1..30}; do
         echo "**** Public IP (via WARP) ****"
         curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp=" || echo "Could not verify IP (expected during build)"
 
-        # Display iptables rules
-        echo "**** Active firewall rules ****"
+        # Display firewall rules
+        echo "**** Active firewall rules (IPv4) ****"
         iptables -L -v -n
+
+        echo "**** Active firewall rules (IPv6) ****"
+        ip6tables -L -v -n
 
         exit 0
     fi
