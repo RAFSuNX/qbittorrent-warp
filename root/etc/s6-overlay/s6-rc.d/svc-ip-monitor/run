@@ -9,9 +9,9 @@ LEAK_COUNT=0
 while true; do
     sleep 20
 
-    # Get public IPs through WARP (both IPv4 and IPv6)
-    PUBLIC_IP4=$(timeout 5 curl -4 -s http://ipinfo.io/ip 2>/dev/null || echo "failed")
-    PUBLIC_IP6=$(timeout 5 curl -6 -s http://ipinfo.io/ip 2>/dev/null || echo "failed")
+    # Get public IPs through WARP (both IPv4 and IPv6) using Cloudflare trace
+    PUBLIC_IP4=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2 || echo "failed")
+    PUBLIC_IP6=$(timeout 5 curl -6 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2 || echo "failed")
 
     # Get timestamp
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
