@@ -134,8 +134,11 @@ for i in {1..30}; do
         wg show wgcf0
 
         # Show public IP (should be Cloudflare IP now)
-        echo "**** Public IP (via WARP) ****"
-        curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp=" || echo "Could not verify IP (expected during build)"
+        echo "**** Public IPv4 (via WARP) ****"
+        curl -4 -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp=" || echo "Could not verify IPv4 (expected during build)"
+
+        echo "**** Public IPv6 (via WARP) ****"
+        curl -6 -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|warp=" || echo "Could not verify IPv6 (expected during build)"
 
         # Display firewall rules
         echo "**** Active firewall rules (IPv4) ****"
