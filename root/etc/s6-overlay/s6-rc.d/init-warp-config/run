@@ -30,11 +30,8 @@ if [[ ! -f "${WARP_CONF}" ]]; then
     # Move config and remove DNS lines (Kubernetes manages DNS), keep MTU and addresses
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
 
-    # Add PostUp/PostDown for MSS clamping on OUTPUT (fixes HTTPS/TLS packet size issues for locally originated traffic)
-    sed -i '/\[Interface\]/a PostUp = iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
-    sed -i '/\[Interface\]/a PostUp = ip6tables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
-    sed -i '/\[Interface\]/a PostDown = iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
-    sed -i '/\[Interface\]/a PostDown = ip6tables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
+    # Set MTU to 1100 (eth0 in k8s is 1230, need room for WireGuard overhead ~80-100 bytes)
+    sed -i 's/^MTU = .*/MTU = 1100/' "${WARP_CONF}"
 
     echo "**** WARP configuration created ****"
 else
@@ -48,11 +45,8 @@ if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; t
     wgcf generate
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
 
-    # Re-add PostUp/PostDown for MSS clamping on OUTPUT
-    sed -i '/\[Interface\]/a PostUp = iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
-    sed -i '/\[Interface\]/a PostUp = ip6tables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu' "${WARP_CONF}"
-    sed -i '/\[Interface\]/a PostDown = iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
-    sed -i '/\[Interface\]/a PostDown = ip6tables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true' "${WARP_CONF}"
+    # Set MTU to 1100
+    sed -i 's/^MTU = .*/MTU = 1100/' "${WARP_CONF}"
 fi
 
 # Set up WireGuard interface
