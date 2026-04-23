@@ -1,0 +1,33 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6am
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/linuxserver/docker-qbittorrent.git
+          git fetch upstream
+          if git merge upstream/master --no-edit; then
+            git push origin master
+            echo "Synced successfully"
+          else
+            echo "Merge conflict detected - manual intervention needed"
+            git merge --abort
+            exit 1
+          fi
