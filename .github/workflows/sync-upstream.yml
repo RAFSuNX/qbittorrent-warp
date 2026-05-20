@@ -15,19 +15,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: warp
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync upstream
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync master to upstream
+        run: |
           git remote add upstream https://github.com/linuxserver/docker-qbittorrent.git
           git fetch upstream
+          git checkout master
           if git merge upstream/master --no-edit; then
             git push origin master
-            echo "Synced successfully"
           else
-            echo "Merge conflict detected - manual intervention needed"
             git merge --abort
+            echo "Merge conflict on master - manual intervention needed"
+            exit 1
+          fi
+
+      - name: Rebase warp onto master
+        run: |
+          git checkout warp
+          if git rebase master; then
+            git push origin warp --force-with-lease
+            echo "warp rebased onto upstream master"
+          else
+            git rebase --abort
+            echo "Rebase conflict on warp - manual intervention needed"
             exit 1
           fi
