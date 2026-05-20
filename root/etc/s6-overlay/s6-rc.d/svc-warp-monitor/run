@@ -23,7 +23,7 @@ while true; do
             echo "**** FATAL: WARP reconnection failed ****"
             echo "**** Container will shutdown to prevent traffic leaks ****"
             # Send termination signal to s6-overlay
-            s6-svscanctl -t /var/run/s6/services
+            kill 1
         else
             echo "**** WARP reconnected successfully ****"
         fi

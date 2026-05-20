@@ -4,77 +4,119 @@
 echo "**** Starting Public IP Monitor (logs every 20s) ****"
 echo "**** CRITICAL: Will stop qBittorrent if non-Cloudflare IP detected ****"
 
-LEAK_COUNT=0
+# Wait for WARP to establish before first check
+sleep 30
+
+WARP_CONF="/config/wgcf0.conf"
+WARP_ENDPOINT="162.159.192.1"
+WARP_PORT="2408"
+
+is_cloudflare_ip() {
+    local ip="$1"
+    [[ -z "${ip}" ]] && return 1
+    echo "${ip}" | grep -qE '^(104\.(1[6-9]|2[0-9]|3[01])\.|172\.(6[4-9]|7[01])\.|162\.(15[89])\.|173\.245\.(4[89]|5[0-9]|6[0-3])\.|103\.(21\.24[4-7]|22\.20[0-3]|31\.[4-7])\.|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\.|190\.93\.24[0-9]|188\.114\.(9[6-9]|1[01][0-9])\.|197\.234\.24[0-3]|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\.|131\.0\.7[2-5])'
+}
+
+block_all_traffic() {
+    iptables -F OUTPUT
+    iptables -P OUTPUT DROP
+    iptables -A OUTPUT -o lo -j ACCEPT
+    iptables -A OUTPUT -j DROP
+
+    ip6tables -F OUTPUT
+    ip6tables -P OUTPUT DROP
+    ip6tables -A OUTPUT -o lo -j ACCEPT
+    ip6tables -A OUTPUT -j DROP
+
+    ss -K dst != 127.0.0.1 2>/dev/null || true
+}
+
+restore_network() {
+    iptables -F OUTPUT
+    iptables -P OUTPUT DROP
+    iptables -A OUTPUT -o lo -j ACCEPT
+    iptables -A OUTPUT -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT
+    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -o wgcf0 -j ACCEPT
+    iptables -A OUTPUT -j DROP
+
+    ip6tables -F OUTPUT
+    ip6tables -P OUTPUT DROP
+    ip6tables -A OUTPUT -o lo -j ACCEPT
+    ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    ip6tables -A OUTPUT -o wgcf0 -j ACCEPT
+    ip6tables -A OUTPUT -j DROP
+}
+
+reconnect_warp() {
+    local attempt="$1"
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[${ts}] Reconnect attempt ${attempt}/3..."
+
+    # Allow WARP endpoint UDP temporarily so WireGuard handshake can happen
+    iptables -I OUTPUT 1 -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT
+
+    wg-quick down "${WARP_CONF}" 2>/dev/null || ip link del wgcf0 2>/dev/null || true
+    sleep 3
+    wg-quick up "${WARP_CONF}" 2>/dev/null
+
+    local waited=0
+    while [[ ${waited} -lt 15 ]]; do
+        if ip link show wgcf0 2>/dev/null | grep -q "<.*UP.*>"; then
+            sleep 3
+            local new_ip
+            new_ip=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
+            if is_cloudflare_ip "${new_ip}"; then
+                echo "[${ts}] WARP reconnected - Cloudflare IP: ${new_ip}"
+                iptables -D OUTPUT -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT 2>/dev/null || true
+                return 0
+            fi
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    iptables -D OUTPUT -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT 2>/dev/null || true
+    return 1
+}
 
 while true; do
     sleep 20
 
-    # Get public IPs through WARP (both IPv4 and IPv6) using Cloudflare trace
-    PUBLIC_IP4=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2 || echo "failed")
-    PUBLIC_IP6=$(timeout 5 curl -6 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2 || echo "failed")
-
-    # Get timestamp
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+    PUBLIC_IP4=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
+    PUBLIC_IP6=$(timeout 5 curl -6 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
 
-    # Log both IPs
-    echo "[${TIMESTAMP}] Public IPv4 via WARP: ${PUBLIC_IP4}"
-    echo "[${TIMESTAMP}] Public IPv6 via WARP: ${PUBLIC_IP6}"
+    echo "[${TIMESTAMP}] Public IPv4 via WARP: ${PUBLIC_IP4:-empty}"
+    echo "[${TIMESTAMP}] Public IPv6 via WARP: ${PUBLIC_IP6:-empty}"
 
-    # Use IPv4 for Cloudflare verification (main check)
-    PUBLIC_IP="${PUBLIC_IP4}"
-
-    # Check if IP is in official Cloudflare ranges (as of 2026-04-07)
-    # Source: https://www.cloudflare.com/ips-v4
-    # Ranges: 104.16.0.0/13, 104.24.0.0/14, 172.64.0.0/13, 162.158.0.0/15,
-    #         173.245.48.0/20, 103.21.244.0/22, 103.22.200.0/22, 103.31.4.0/22,
-    #         141.101.64.0/18, 108.162.192.0/18, 190.93.240.0/20, 188.114.96.0/20,
-    #         197.234.240.0/22, 198.41.128.0/17, 131.0.72.0/22
-    if echo "${PUBLIC_IP}" | grep -qE '^(104\.(1[6-9]|2[0-9]|3[01])\.|172\.(6[4-9]|7[01])\.|162\.(15[89])\.|173\.245\.(4[89]|5[0-9]|6[0-3])\.|103\.(21\.24[4-7]|22\.20[0-3]|31\.[4-7])\.|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\.|190\.93\.24[0-9]|188\.114\.(9[6-9]|1[01][0-9])\.|197\.234\.24[0-3]|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\.|131\.0\.7[2-5])'; then
+    if is_cloudflare_ip "${PUBLIC_IP4}"; then
         echo "[${TIMESTAMP}] ✓ Cloudflare IP confirmed - WARP active"
-        LEAK_COUNT=0
-    elif [[ "${PUBLIC_IP}" == "failed" ]]; then
-        echo "[${TIMESTAMP}] ⚠ IP check failed - connection issue"
-        LEAK_COUNT=$((LEAK_COUNT + 1))
-        if [[ ${LEAK_COUNT} -ge 3 ]]; then
-            echo "[${TIMESTAMP}] 🚨 CRITICAL: IP check failed 3 times - possible WARP failure!"
+        continue
+    fi
+
+    echo "[${TIMESTAMP}] ALERT: IP '${PUBLIC_IP4:-empty}' not Cloudflare - blocking traffic and reconnecting"
+    block_all_traffic
+    s6-svc -d /run/service/svc-qbittorrent 2>/dev/null || true
+
+    RECONNECTED=0
+    for attempt in 1 2 3; do
+        if reconnect_warp "${attempt}"; then
+            restore_network
+            sleep 5
+            s6-svc -u /run/service/svc-qbittorrent 2>/dev/null || true
+            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+            echo "[${TIMESTAMP}] Network restored - qBittorrent restarted"
+            RECONNECTED=1
+            break
         fi
-    else
-        echo "[${TIMESTAMP}] 🚨🚨🚨 CRITICAL ALERT: NON-CLOUDFLARE IP DETECTED! 🚨🚨🚨"
-        echo "[${TIMESTAMP}] Detected IP: ${PUBLIC_IP}"
-        echo "[${TIMESTAMP}] This indicates WARP has failed and traffic may be leaking!"
-        echo "[${TIMESTAMP}] EMERGENCY ACTION: KILLING ALL CONNECTIONS IMMEDIATELY!"
+        sleep 15
+    done
 
-        # STEP 1: Block ALL network traffic immediately (except localhost)
-        echo "[${TIMESTAMP}] Blocking all network traffic..."
-        iptables -F OUTPUT
-        iptables -P OUTPUT DROP
-        iptables -A OUTPUT -o lo -j ACCEPT
-        iptables -A OUTPUT -j DROP
-
-        # Kill all established connections
-        echo "[${TIMESTAMP}] Killing all network connections..."
-        ss -K dst != 127.0.0.1 2>/dev/null || true
-
-        # STEP 2: Stop qBittorrent service
-        echo "[${TIMESTAMP}] Stopping qBittorrent service..."
-        s6-svc -d /run/service/svc-qbittorrent
-        s6-svc -k /run/service/svc-qbittorrent
-
-        # STEP 3: Bring down WARP interface
-        echo "[${TIMESTAMP}] Bringing down compromised WARP interface..."
-        wg-quick down /config/wgcf0.conf 2>/dev/null || ip link set wgcf0 down 2>/dev/null || true
-
-        echo "[${TIMESTAMP}] ✓ All connections killed"
-        echo "[${TIMESTAMP}] ✓ qBittorrent stopped"
-        echo "[${TIMESTAMP}] ✓ Network blocked"
-        echo "[${TIMESTAMP}] Container will shutdown in 5 seconds"
-
-        # Give time to flush logs
-        sleep 5
-
-        # STEP 4: Shutdown entire container
-        s6-svscanctl -t /var/run/s6/services
-
-        exit 1
+    if [[ "${RECONNECTED}" -eq 0 ]]; then
+        TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[${TIMESTAMP}] FATAL: WARP reconnect failed after 3 attempts - exiting container"
+        kill 1
     fi
 done
