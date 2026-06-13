@@ -17,6 +17,21 @@ is_cloudflare_ip() {
     echo "${ip}" | grep -qE '^(104\.(1[6-9]|2[0-9]|3[01])\.|172\.(6[4-9]|7[01])\.|162\.(15[89])\.|173\.245\.(4[89]|5[0-9]|6[0-3])\.|103\.(21\.24[4-7]|22\.20[0-3]|31\.[4-7])\.|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|108\.162\.(19[2-9]|2[0-4][0-9]|25[0-5])\.|190\.93\.24[0-9]|188\.114\.(9[6-9]|1[01][0-9])\.|197\.234\.24[0-3]|198\.41\.(12[89]|1[3-9][0-9]|2[0-4][0-9]|25[0-5])\.|131\.0\.7[2-5])'
 }
 
+# Retry curl up to 3 times — one transient timeout must not trigger reconnect
+get_public_ipv4() {
+    local ip
+    for i in 1 2 3; do
+        ip=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
+        [[ -n "${ip}" ]] && echo "${ip}" && return 0
+        [[ ${i} -lt 3 ]] && sleep 3
+    done
+    return 1
+}
+
+wgcf0_is_up() {
+    ip link show wgcf0 2>/dev/null | grep -q "<.*UP.*>"
+}
+
 block_all_traffic() {
     iptables -F OUTPUT
     iptables -P OUTPUT DROP
@@ -54,8 +69,10 @@ reconnect_warp() {
     ts=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[${ts}] Reconnect attempt ${attempt}/3..."
 
-    # Allow WARP endpoint UDP temporarily so WireGuard handshake can happen
+    # Allow WARP endpoint UDP + DNS so wg-quick can resolve the hostname
     iptables -I OUTPUT 1 -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT
+    iptables -I OUTPUT 1 -p udp -d 1.1.1.1 --dport 53 -j ACCEPT
+    iptables -I OUTPUT 1 -p udp -d 8.8.8.8 --dport 53 -j ACCEPT
 
     wg-quick down "${WARP_CONF}" 2>/dev/null || ip link del wgcf0 2>/dev/null || true
     sleep 3
@@ -63,12 +80,14 @@ reconnect_warp() {
 
     local waited=0
     while [[ ${waited} -lt 15 ]]; do
-        if ip link show wgcf0 2>/dev/null | grep -q "<.*UP.*>"; then
+        if wgcf0_is_up; then
             sleep 3
             local new_ip
             new_ip=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
             if is_cloudflare_ip "${new_ip}"; then
                 echo "[${ts}] WARP reconnected - Cloudflare IP: ${new_ip}"
+                iptables -D OUTPUT -p udp -d 1.1.1.1 --dport 53 -j ACCEPT 2>/dev/null || true
+                iptables -D OUTPUT -p udp -d 8.8.8.8 --dport 53 -j ACCEPT 2>/dev/null || true
                 iptables -D OUTPUT -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT 2>/dev/null || true
                 return 0
             fi
@@ -77,6 +96,8 @@ reconnect_warp() {
         waited=$((waited + 2))
     done
 
+    iptables -D OUTPUT -p udp -d 1.1.1.1 --dport 53 -j ACCEPT 2>/dev/null || true
+    iptables -D OUTPUT -p udp -d 8.8.8.8 --dport 53 -j ACCEPT 2>/dev/null || true
     iptables -D OUTPUT -p udp -d "${WARP_ENDPOINT}" --dport "${WARP_PORT}" -j ACCEPT 2>/dev/null || true
     return 1
 }
@@ -85,18 +106,25 @@ while true; do
     sleep 20
 
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-    PUBLIC_IP4=$(timeout 5 curl -4 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
-    PUBLIC_IP6=$(timeout 5 curl -6 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
 
-    echo "[${TIMESTAMP}] Public IPv4 via WARP: ${PUBLIC_IP4:-empty}"
-    echo "[${TIMESTAMP}] Public IPv6 via WARP: ${PUBLIC_IP6:-empty}"
+    # Check interface first — if wgcf0 is down, curl will definitely fail
+    if ! wgcf0_is_up; then
+        echo "[${TIMESTAMP}] ALERT: wgcf0 interface is DOWN"
+    else
+        PUBLIC_IP4=$(get_public_ipv4 || true)
+        PUBLIC_IP6=$(timeout 5 curl -6 -s https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep '^ip=' | cut -d= -f2)
 
-    if is_cloudflare_ip "${PUBLIC_IP4}"; then
-        echo "[${TIMESTAMP}] ✓ Cloudflare IP confirmed - WARP active"
-        continue
+        echo "[${TIMESTAMP}] Public IPv4 via WARP: ${PUBLIC_IP4:-empty}"
+        echo "[${TIMESTAMP}] Public IPv6 via WARP: ${PUBLIC_IP6:-empty}"
+
+        if is_cloudflare_ip "${PUBLIC_IP4}"; then
+            echo "[${TIMESTAMP}] ✓ Cloudflare IP confirmed - WARP active"
+            continue
+        fi
+
+        echo "[${TIMESTAMP}] ALERT: IP '${PUBLIC_IP4:-empty}' not Cloudflare - blocking traffic and reconnecting"
     fi
 
-    echo "[${TIMESTAMP}] ALERT: IP '${PUBLIC_IP4:-empty}' not Cloudflare - blocking traffic and reconnecting"
     block_all_traffic
     s6-svc -d /run/service/svc-qbittorrent 2>/dev/null || true
 
