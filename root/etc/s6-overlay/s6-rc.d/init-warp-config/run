@@ -10,11 +10,16 @@ WGCF_DIR="/config/wgcf"
 mkdir -p "${WGCF_DIR}"
 cd "${WGCF_DIR}"
 
-# Check if we already have a WARP config
-if [[ ! -f "${WARP_CONF}" ]]; then
-    echo "**** Registering with Cloudflare WARP ****"
+warp_conf_valid() {
+    local conf="$1"
+    [[ -f "${conf}" ]] \
+        && grep -q '^\[Interface\]' "${conf}" \
+        && grep -q '^Address' "${conf}" \
+        && grep -q '^PrivateKey' "${conf}" \
+        && grep -q '^\[Peer\]' "${conf}"
+}
 
-    # Register new account
+generate_warp_conf() {
     if [[ -n "${WARP_LICENSE_KEY}" ]]; then
         echo "**** Using WARP+ license key ****"
         wgcf register --accept-tos --license-key "${WARP_LICENSE_KEY}"
@@ -23,17 +28,25 @@ if [[ ! -f "${WARP_CONF}" ]]; then
         wgcf register --accept-tos
     fi
 
-    # Generate WireGuard profile
     echo "**** Generating WireGuard configuration ****"
     wgcf generate
 
-    # Move config and remove DNS lines (Kubernetes manages DNS)
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
 
-    # Keep default MTU 1280 for now (1100 causes routing table issues)
-    # Will adjust MTU after interface is up
+    if ! warp_conf_valid "${WARP_CONF}"; then
+        echo "**** ERROR: wgcf generate produced invalid config — missing Address/PrivateKey ****"
+        cat "${WARP_CONF}" || true
+        exit 1
+    fi
 
     echo "**** WARP configuration created ****"
+}
+
+# Generate if missing or invalid (empty/corrupt config causes wgcf0 to come up with no IP)
+if ! warp_conf_valid "${WARP_CONF}"; then
+    [[ -f "${WARP_CONF}" ]] && echo "**** Existing WARP config is invalid or empty — regenerating ****"
+    echo "**** Registering with Cloudflare WARP ****"
+    generate_warp_conf
 else
     echo "**** Using existing WARP configuration ****"
 fi
@@ -44,6 +57,10 @@ if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; t
     wgcf update --license-key "${WARP_LICENSE_KEY}" 2>/dev/null || true
     wgcf generate
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
+    if ! warp_conf_valid "${WARP_CONF}"; then
+        echo "**** ERROR: license update produced invalid config ****"
+        exit 1
+    fi
 fi
 
 # Ensure PersistentKeepalive is set — prevents NAT expiry killing the tunnel silently
