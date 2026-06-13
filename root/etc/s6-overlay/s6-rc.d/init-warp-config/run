@@ -46,6 +46,19 @@ if [[ -n "${WARP_LICENSE_KEY}" ]] && [[ -f "${WGCF_DIR}/wgcf-account.toml" ]]; t
     grep -v -E '^DNS = ' wgcf-profile.conf > "${WARP_CONF}"
 fi
 
+# Ensure PersistentKeepalive is set — prevents NAT expiry killing the tunnel silently
+if ! grep -q 'PersistentKeepalive' "${WARP_CONF}"; then
+    sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "${WARP_CONF}"
+fi
+
+# Flush iptables from any previous container run — kill switch survives restart in same netns.
+# qBittorrent hasn't started yet (depends on this script), so no traffic can leak here.
+echo "**** Resetting iptables for fresh WARP setup ****"
+iptables -F OUTPUT
+iptables -P OUTPUT ACCEPT
+ip6tables -F OUTPUT
+ip6tables -P OUTPUT ACCEPT
+
 # Set up WireGuard interface
 echo "**** Setting up WireGuard interface ****"
 if ip link show wgcf0 2>/dev/null; then
